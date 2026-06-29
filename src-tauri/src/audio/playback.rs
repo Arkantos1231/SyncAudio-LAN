@@ -1,6 +1,5 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::HeapConsumer;
-use super::{CHANNELS, SAMPLE_RATE};
 
 /// Starts audio playback on the default output device.
 /// Reads f32 samples from the ring buffer consumer.
@@ -16,17 +15,18 @@ pub fn start_playback(
 
     log::info!("Reproduciendo en: {}", device.name().unwrap_or_default());
 
-    let stream_config = cpal::StreamConfig {
-        channels: CHANNELS,
-        sample_rate: cpal::SampleRate(SAMPLE_RATE),
-        buffer_size: cpal::BufferSize::Default,
-    };
+    // Use the device's native format so WASAPI accepts the output stream
+    let supported = device.default_output_config()?;
+    log::info!("Formato nativo del dispositivo de salida: {:?}", supported);
+    let config = supported.config();
 
     // Minimum samples buffered before we start playing to absorb jitter
-    let min_samples = (buffer_size_ms as usize) * (SAMPLE_RATE as usize / 1000) * CHANNELS as usize;
+    let min_samples = (buffer_size_ms as usize)
+        * (config.sample_rate.0 as usize / 1000)
+        * config.channels as usize;
 
     let stream = device.build_output_stream(
-        &stream_config,
+        &config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             let available = cons.len();
             if available >= min_samples {
