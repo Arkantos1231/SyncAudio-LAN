@@ -1,2 +1,5 @@
 [env]
 CMAKE = "C:\\Program Files\\CMake\\bin\\cmake.exe"
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/LIBPATH:C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.22621.0\\um\\x64"]
