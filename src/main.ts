@@ -109,12 +109,13 @@ bufSlider.addEventListener("input", () => {
 
 connectBtn.addEventListener("click", async () => {
   hideError();
+  setStatus("connecting");
   const cfg = collectConfig();
   try {
     await invoke("set_config", { config: cfg });
-    // Update autostart registry entry
     await invoke("set_autostart", { enabled: cfg.auto_connect });
     await invoke("connect");
+    setStatus("connected");
   } catch (e) {
     showError(String(e));
     setStatus("error");
@@ -124,6 +125,7 @@ connectBtn.addEventListener("click", async () => {
 discBtn.addEventListener("click", async () => {
   try {
     await invoke("disconnect");
+    setStatus("idle");
   } catch (e) {
     showError(String(e));
   }

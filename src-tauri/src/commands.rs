@@ -91,6 +91,13 @@ pub async fn do_connect(state: Arc<AppState>, app: AppHandle) -> anyhow::Result<
     let rb = ringbuf::HeapRb::<f32>::new(RING_CAPACITY);
     let (prod, cons) = rb.split();
 
+    // Mute local output on the sender so audio only plays on the receiver
+    if config.role == Role::Sender {
+        if let Err(e) = crate::audio::volume::set_output_muted(true) {
+            log::warn!("No se pudo silenciar la salida de audio: {e}");
+        }
+    }
+
     match config.role {
         Role::Sender => {
             // Audio capture runs on a dedicated thread (cpal::Stream is !Send on Windows)
@@ -188,6 +195,10 @@ pub async fn do_disconnect(state: Arc<AppState>, app: AppHandle) {
     if let Some(h) = handle {
         h.stop();
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
+    // Restore audio output (in case we were muted as sender)
+    if let Err(e) = crate::audio::volume::set_output_muted(false) {
+        log::warn!("No se pudo restaurar el audio: {e}");
     }
     state.connection_status.store(STATUS_IDLE, Ordering::Relaxed);
     let _ = app.emit("status-changed", "idle");
