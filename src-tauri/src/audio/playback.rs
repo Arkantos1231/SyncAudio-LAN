@@ -1,9 +1,9 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::HeapConsumer;
 
-/// Starts audio playback on the default output device.
-/// Prefers 48 kHz stereo f32 for compatibility with the sender's captured format.
-/// Falls back to the device's native format if 48 kHz stereo is not supported.
+/// Starts audio playback on the default output device using the device's native
+/// format. Stereo samples from the ring buffer are upmixed to the device's
+/// channel count so that subwoofers and surround speakers are driven correctly.
 pub fn start_playback(
     mut cons: HeapConsumer<f32>,
     buffer_size_ms: u32,
@@ -15,30 +15,28 @@ pub fn start_playback(
 
     log::info!("Reproduciendo en: {}", device.name().unwrap_or_default());
 
-    // Prefer 48 kHz stereo so it matches what the sender always delivers
-    let config = best_output_config(&device);
-    log::info!("Config de playback: sample_rate={} channels={}",
-        config.sample_rate.0, config.channels);
+    let supported = device.default_output_config()?;
+    log::info!(
+        "Formato nativo del receiver: sample_rate={} channels={} format={:?}",
+        supported.sample_rate().0,
+        supported.channels(),
+        supported.sample_format()
+    );
 
-    let min_samples = (buffer_size_ms as usize)
+    let config = supported.config();
+    let native_channels = config.channels as usize;
+
+    // min_stereo_samples is based on stereo pairs in the ring buffer.
+    let min_stereo_samples = (buffer_size_ms as usize)
         * (config.sample_rate.0 as usize / 1000)
-        * config.channels as usize;
+        * 2;
 
+    // Build f32 output stream — WASAPI shared mode converts f32 to the
+    // device's native bit depth internally, so we don't need to branch here.
     let stream = device.build_output_stream(
         &config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let available = cons.len();
-            if available >= min_samples {
-                let to_read = data.len().min(available);
-                cons.pop_slice(&mut data[..to_read]);
-                for s in data[to_read..].iter_mut() {
-                    *s = 0.0;
-                }
-            } else {
-                for s in data.iter_mut() {
-                    *s = 0.0;
-                }
-            }
+            fill_output(data, &mut cons, native_channels, min_stereo_samples);
         },
         |err| log::error!("Error en playback: {err}"),
         None,
@@ -48,39 +46,80 @@ pub fn start_playback(
     Ok(stream)
 }
 
-/// Returns a StreamConfig for the device, preferring 48 kHz stereo.
-/// Falls back to the device's native mix format if 48 kHz stereo is not available.
-fn best_output_config(device: &cpal::Device) -> cpal::StreamConfig {
-    use cpal::traits::DeviceTrait;
+/// Reads stereo f32 pairs from `cons` and distributes them across `out_channels`
+/// speakers using a standard upmix matrix.
+///
+/// Windows surround channel order: FL, FR, FC, LFE, BL, BR, SL, SR
+fn fill_output(
+    data: &mut [f32],
+    cons: &mut HeapConsumer<f32>,
+    out_channels: usize,
+    min_stereo_samples: usize,
+) {
+    if cons.len() < min_stereo_samples {
+        data.fill(0.0);
+        return;
+    }
 
-    const PREFERRED_RATE: u32 = 48_000;
-    const PREFERRED_CHANNELS: u16 = 2;
+    let mut stereo = [0.0f32; 2];
+    let total_frames = data.len() / out_channels;
 
-    let supports_48k = device
-        .supported_output_configs()
-        .map(|mut configs| {
-            configs.any(|c| {
-                c.channels() == PREFERRED_CHANNELS
-                    && c.min_sample_rate().0 <= PREFERRED_RATE
-                    && c.max_sample_rate().0 >= PREFERRED_RATE
-            })
-        })
-        .unwrap_or(false);
-
-    if supports_48k {
-        cpal::StreamConfig {
-            channels: PREFERRED_CHANNELS,
-            sample_rate: cpal::SampleRate(PREFERRED_RATE),
-            buffer_size: cpal::BufferSize::Default,
+    for (frame_idx, out_frame) in data.chunks_mut(out_channels).take(total_frames).enumerate() {
+        if cons.len() >= 2 {
+            cons.pop_slice(&mut stereo);
+        } else {
+            // Ring buffer dry — silence the rest
+            for s in data[frame_idx * out_channels..].iter_mut() {
+                *s = 0.0;
+            }
+            return;
         }
-    } else {
-        device
-            .default_output_config()
-            .map(|c| c.config())
-            .unwrap_or(cpal::StreamConfig {
-                channels: PREFERRED_CHANNELS,
-                sample_rate: cpal::SampleRate(PREFERRED_RATE),
-                buffer_size: cpal::BufferSize::Default,
-            })
+
+        let (l, r) = (stereo[0], stereo[1]);
+
+        match out_channels {
+            1 => {
+                out_frame[0] = (l + r) * 0.5;
+            }
+            2 => {
+                out_frame[0] = l;
+                out_frame[1] = r;
+            }
+            4 => {
+                // FL, FR, BL, BR
+                out_frame[0] = l;
+                out_frame[1] = r;
+                out_frame[2] = l;
+                out_frame[3] = r;
+            }
+            6 => {
+                // 5.1: FL, FR, FC, LFE, BL, BR
+                let center = (l + r) * 0.5;
+                let lfe    = (l + r) * 0.5;
+                out_frame[0] = l;
+                out_frame[1] = r;
+                out_frame[2] = center;
+                out_frame[3] = lfe;
+                out_frame[4] = l;
+                out_frame[5] = r;
+            }
+            8 => {
+                // 7.1: FL, FR, FC, LFE, BL, BR, SL, SR
+                let center = (l + r) * 0.5;
+                let lfe    = (l + r) * 0.5;
+                out_frame[0] = l;
+                out_frame[1] = r;
+                out_frame[2] = center;
+                out_frame[3] = lfe;
+                out_frame[4] = l;
+                out_frame[5] = r;
+                out_frame[6] = l;
+                out_frame[7] = r;
+            }
+            _ => {
+                let mono = (l + r) * 0.5;
+                out_frame.fill(mono);
+            }
+        }
     }
 }
