@@ -23,11 +23,15 @@ pub async fn run_receiver(
                         let count = u16::from_be_bytes(buf[4..6].try_into().unwrap()) as usize;
                         let payload = &buf[6..n];
 
-                        // Reinterpret bytes as f32 samples
+                        // Convert bytes to f32 samples manually (avoids alignment issues
+                        // with bytemuck::cast_slice on unaligned subslices)
                         let expected_bytes = count * 4;
                         if payload.len() >= expected_bytes {
-                            let samples: &[f32] = bytemuck::cast_slice(&payload[..expected_bytes]);
-                            prod.push_slice(samples);
+                            let samples: Vec<f32> = payload[..expected_bytes]
+                                .chunks_exact(4)
+                                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                                .collect();
+                            prod.push_slice(&samples);
                         } else {
                             log::warn!("Paquete UDP incompleto: esperado {expected_bytes}B, recibido {}B", payload.len());
                         }
