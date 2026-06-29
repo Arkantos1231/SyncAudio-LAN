@@ -18,7 +18,9 @@ use config::load_config;
 use state::AppState;
 
 fn main() {
-    env_logger::init();
+    env_logger::Builder::from_default_env()
+        .filter_level(log::LevelFilter::Info)
+        .init();
 
     let cfg = load_config();
     let auto_connect = cfg.auto_connect;
