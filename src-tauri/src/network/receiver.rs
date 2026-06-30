@@ -31,6 +31,17 @@ pub async fn run_receiver(
                                 .chunks_exact(4)
                                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                                 .collect();
+
+                            // Log peak amplitude every 200 packets (~2s) so we
+                            // can verify the received signal is not silent/corrupted.
+                            if _seq % 200 == 0 {
+                                let peak = samples.iter().cloned().fold(0.0f32, f32::max);
+                                log::info!(
+                                    "Receiver — paquete #{_seq}  pico de amplitud: {peak:.4}  buffer: {} muestras",
+                                    prod.len()
+                                );
+                            }
+
                             prod.push_slice(&samples);
                         } else {
                             log::warn!("Paquete UDP incompleto: esperado {expected_bytes}B, recibido {}B", payload.len());
